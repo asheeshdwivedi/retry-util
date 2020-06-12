@@ -11,15 +11,18 @@ import scala.util.control.NonFatal
 import akka.pattern._
 import com.retry.util.log.Logging
 
+import scala.util.Try
+
 object RetryUtil extends Logging {
 
-  val RetryableExceptions: Array[_ >: Throwable] = Array(
+  val RetryableExceptions: Array[Class[_]] = Array(
     classOf[IllegalArgumentException],
     classOf[IOException]
   )
 
   val defaultPredicate: Throwable => Boolean = e =>
-    RetryableExceptions.map(_.equals(e.getClass))
+    RetryableExceptions
+      .map(_.equals(e.getClass))
       .reduce(_ || _)
 
   case class RetryConfig(
@@ -70,7 +73,7 @@ object RetryUtil extends Logging {
                 nextBackoff.toSeconds
               )
               after(nextBackoff, scheduler) {
-                log.debug(
+                log.warn(
                   "Exception caught {}, message {}, retrying exponentially, iteration: {}",
                   e.getClass.getSimpleName,
                   e.getMessage,
@@ -110,11 +113,17 @@ object RetryUtil extends Logging {
                    iteration: Long,
                    retryConfig: RetryConfig
                  ): FiniteDuration = {
-    val backoff: FiniteDuration = delay * Math
-      .pow(2, iteration - 1)
-      .toLong
-    println("Back off " + backoff)
-    addJitter(retryConfig, backoff)
+    val nextBackoff: FiniteDuration = Try {
+      val backoff: FiniteDuration = delay * Math
+        .pow(2, iteration - 1)
+        .toLong
+      addJitter(retryConfig, backoff)
+    }.getOrElse(retryConfig.maxBackoff)
+
+    nextBackoff match {
+      case f: FiniteDuration => f
+      case _                 => retryConfig.maxBackoff
+    }
   }
 
   /**
@@ -122,10 +131,10 @@ object RetryUtil extends Logging {
    * lowBound for the jitter that won't let the final backoff go below [[RetryConfig.firstBackoff]].
    * highBound for the jitter that won't let the final backoff go over [[RetryConfig.maxBackoff]].
    */
-  def addJitter(
-                 retryConfig: RetryConfig,
-                 duration: FiniteDuration
-               ): FiniteDuration = {
+  private def addJitter(
+                         retryConfig: RetryConfig,
+                         duration: FiniteDuration
+                       ): FiniteDuration = {
     val random = ThreadLocalRandom.current
 
     val offsetCap =
@@ -138,8 +147,8 @@ object RetryUtil extends Logging {
       Math.min((retryConfig.maxBackoff - duration).toMillis, offsetCap)
 
     val jitter =
-      if (highBound <= lowBound)
-        if (highBound <= 0) 0
+      if (highBound == lowBound)
+        if (highBound == 0) 0
         else random.nextLong(highBound)
       else random.nextLong(lowBound, highBound)
 

@@ -1,17 +1,21 @@
 package com.retry.util
 
-import java.io.{FileNotFoundException, IOException}
+import java.io.FileNotFoundException
 import java.util.concurrent.atomic.AtomicInteger
 
 import akka.actor.{ActorSystem, Scheduler}
 import com.retry.util.RetryUtil.RetryConfig
-import org.scalatest.concurrent.ScalaFutures
-import org.scalatest.wordspec.AnyWordSpecLike
 import org.scalatest.BeforeAndAfterAll
+import org.scalatest.concurrent.ScalaFutures
 import org.scalatest.matchers.should.Matchers
 import org.scalatest.time.{Millis, Seconds, Span}
+import org.scalatest.wordspec.AnyWordSpecLike
+
+import scala.annotation.tailrec
 import scala.concurrent.ExecutionContext.Implicits.global
 import scala.concurrent.Future
+import scala.concurrent.duration.FiniteDuration
+import scala.concurrent.duration._
 
 class RetryUtilSpec extends AnyWordSpecLike
   with Matchers
@@ -153,6 +157,40 @@ class RetryUtilSpec extends AnyWordSpecLike
       result.failed.futureValue.getMessage shouldBe "4"
     }
 
+  }
+
+  "nextBackOff should not cross firstBackoff and maxBackoff limit" in {
+    // create n backoff
+    val retryConfig: RetryConfig = RetryConfig(
+      numRetries = 100,
+      firstBackoff = 1.second,
+      maxBackoff = 30.second
+    )
+    def createBackOf(n: Long): List[FiniteDuration] = {
+      @tailrec
+      def nextBackOf(
+                      delay: FiniteDuration,
+                      iteration: Long,
+                      acc: List[FiniteDuration]
+                    ): List[FiniteDuration] = {
+        if (iteration == n) acc
+        else {
+          val nextDelay = RetryUtil.nextBackOff(delay, iteration, retryConfig)
+          nextBackOf(nextDelay, iteration + 1, nextDelay :: acc)
+        }
+      }
+      nextBackOf(retryConfig.firstBackoff, 1, List())
+    }
+
+    //create next backoff for numRetries times
+    val result = createBackOf(retryConfig.numRetries)
+
+    // all generate BackOf must between firstBackoff and maxBackoff
+    val shouldBeTrue = result
+      .map(a => a >= retryConfig.firstBackoff && a <= retryConfig.maxBackoff)
+      .reduce(_ && _)
+
+    shouldBeTrue shouldBe true
   }
 
 }
